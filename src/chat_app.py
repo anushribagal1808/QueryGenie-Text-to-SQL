@@ -1,0 +1,143 @@
+import os
+import warnings
+import sys
+import logging
+import streamlit as st
+import unidecode
+from dotenv import load_dotenv
+
+from helper import display_python_code_plots, display_text_with_images
+from agent import create_agent_for_python, create_agent_for_sql
+
+warnings.filterwarnings("ignore")
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+logger = logging.getLogger(__name__)
+
+current_dir = os.path.dirname(os.path.abspath(__file__))
+parent_dir = os.path.join(current_dir, "..")
+sys.path.insert(0, parent_dir)
+load_dotenv(os.path.join(parent_dir, ".env"))
+
+st.set_page_config(page_title="QueryGenie Analytics")
+
+if 'agent_memory_sql' not in st.session_state:
+    st.session_state['agent_memory_sql'] = create_agent_for_sql()
+    st.session_state['agent_memory_python'] = create_agent_for_python()
+
+
+def generate_response(code_type, input_text):
+    """
+    Generate a response based on the provided input text and code type.
+    """
+    prompt = unidecode.unidecode(input_text)
+    if code_type == "python":
+        try:
+            response = st.session_state.sql_agent.invoke({"input": prompt})['output']
+            logger.info("SQL agent response: %s", response)
+        except Exception as e:
+            logger.exception("SQL agent failed on input: %s", prompt)
+            st.session_state["last_error"] = str(e)
+            return "NO_RESPONSE"
+        keywords = ["please provide", "don't know", "more context", "provide more", "vague request"]
+        if any(token in response.lower() for token in keywords):
+            return "NO_RESPONSE"
+        prompt = {"input": "Write a code in python to plot the following data\n\n" + response}
+        try:
+            return st.session_state.python_agent.invoke(prompt)
+        except Exception as e:
+            logger.exception("Python agent failed on input: %s", prompt)
+            st.session_state["last_error"] = str(e)
+            return "NO_RESPONSE"
+    else:
+        try:
+            return st.session_state.sql_agent.invoke({"input": prompt})['output']
+        except Exception as e:
+            logger.exception("SQL agent failed on input: %s", prompt)
+            st.session_state["last_error"] = str(e)
+            return "NO_RESPONSE"
+
+
+def reset_conversation():
+    st.session_state.messages = []
+    st.session_state.sql_agent = create_agent_for_sql()
+    st.session_state.python_agent = create_agent_for_python()
+
+
+if "messages" not in st.session_state:
+    st.session_state.messages = []
+
+if "sql_agent" not in st.session_state:
+    st.session_state.sql_agent = st.session_state['agent_memory_sql']
+    st.session_state.python_agent = st.session_state['agent_memory_python']
+
+st.title("QueryGenie")
+col1, col2 = st.columns([3, 1])
+with col2:
+    st.button("Reset Chat", on_click=reset_conversation)
+
+for message in st.session_state.messages:
+    with st.chat_message(message["role"]):
+        if message["role"] in ("assistant", "error"):
+            display_text_with_images(message["content"])
+        elif message["role"] == "plot":
+            exec(message["content"])
+        else:
+            st.markdown(message["content"])
+
+
+if prompt := st.chat_input("Please ask your question:"):
+    with st.chat_message("user"):
+        st.markdown(prompt)
+    st.session_state.messages.append({"role": "user", "content": prompt})
+
+    keywords = ["plot", "graph", "chart", "diagram"]
+    if any(token in prompt.lower() for token in keywords):
+        prev_context = ""
+        for msg in reversed(st.session_state.messages):
+            if msg["role"] == "assistant":
+                prev_context = msg["content"] + "\n\n" + prev_context
+                break
+        if len(prev_context) > 0:
+            prompt = prompt + "\n\nGiven previous agent responses:\n" + prev_context + "\n"
+        response = generate_response("python", prompt)
+        if response == "NO_RESPONSE":
+            err_detail = st.session_state.get("last_error", "")
+            response = "Please try again with a re-phrased query and more context"
+            with st.chat_message("error"):
+                display_text_with_images(response)
+                if err_detail:
+                    with st.expander("Show technical error"):
+                        st.code(err_detail)
+            st.session_state.messages.append({"role": "error", "content": response})
+        else:
+            code = display_python_code_plots(response['output'])
+            try:
+                code = "import pandas as pd\n" + code.replace("fig.show()", "")
+                code += "st.plotly_chart(fig, theme='streamlit', use_container_width=True)"
+                exec(code)
+                st.session_state.messages.append({"role": "plot", "content": code})
+            except Exception as e:
+                logger.exception("Plot rendering failed")
+                response = "Please try again with a re-phrased query and more context"
+                with st.chat_message("error"):
+                    display_text_with_images(response)
+                    with st.expander("Show technical error"):
+                        st.code(str(e))
+                st.session_state.messages.append({"role": "error", "content": response})
+    else:
+        if len(st.session_state.messages) > 1:
+            context_length = 0
+            prev_context = ""
+            for msg in reversed(st.session_state.messages):
+                if context_length > 1:
+                    break
+                if msg["role"] == "assistant":
+                    prev_context = msg["content"] + "\n\n" + prev_context
+                    context_length += 1
+            response = generate_response("sql", prompt + "\n\nGiven previous agent responses:\n" + prev_context + "\n")
+        else:
+            response = generate_response("sql", prompt)
+        with st.chat_message("assistant"):
+            display_text_with_images(response)
+        st.session_state.messages.append({"role": "assistant", "content": response})
