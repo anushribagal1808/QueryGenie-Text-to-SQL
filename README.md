@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # QueryGenie – Finance Loan Analytics AI Agent
 
 ## Overview
@@ -818,3 +819,6 @@ Aspiring Data Analyst | Data Engineer | AI/ML Enthusiast
 - Docker
 - MLOps
 - Data Analytics
+=======
+# QueryGenie-Text-to-SQL
+>>>>>>> af42ec864d0bdcf8e74085a78a1b7254b5b9ba44
